@@ -1,5 +1,5 @@
 """
-Main script for training a Spiking Weight-Agnostic Neural Network
+Main script for training a Spiking Weight-Agnostic Neural Network with multiple layers
 """
 import torch
 import random
@@ -11,12 +11,13 @@ from torchvision import datasets, transforms
 
 from spiking_wann.config import (
     DEVICE, POPULATION_SIZE, NUM_GENERATIONS, 
-    NUM_INPUTS, NUM_OUTPUTS, BATCH_SIZE
+    NUM_INPUTS, NUM_OUTPUTS, BATCH_SIZE, NUM_HIDDEN_LAYERS
 )
 from spiking_wann.model import SpikingWANN
 from spiking_wann.evolution import initialize_population, select_and_mutate_parallel
 from spiking_wann.training import evaluate_population_parallel, evaluate_best_model, setup_parallel_environment
-from spiking_wann.utils import visualize_graph, visualize_fitness_history
+from spiking_wann.utils import visualize_graph, visualize_fitness_history, visualize_layer_connectivity
+from spiking_wann.model.graph_utils import analyze_layer_connectivity
 
 
 def main():
@@ -32,6 +33,7 @@ def main():
         torch.cuda.manual_seed_all(seed)
     
     print(f"Using device: {DEVICE}")
+    print(f"Using {NUM_HIDDEN_LAYERS} hidden layers")
     
     # Parameters for training
     num_generations = NUM_GENERATIONS
@@ -102,6 +104,11 @@ def main():
         print(f"Best network: {len(best_graph['nodes'])} nodes ({best_hidden} hidden), {len(best_graph['edges'])} edges")
         print(f"Best accuracy: {best_accuracy:.4f}")
         
+        # Analyze layer connectivity for the best network
+        layer_stats = analyze_layer_connectivity(best_graph)
+        print(f"Skip connections: {layer_stats['skip_connections']}")
+        print(f"Layer sizes: {layer_stats['layer_sizes']}")
+        
         # Save top networks for this generation
         print(f"Saving top {top_networks_to_save} networks...")
         for i in range(min(top_networks_to_save, len(evaluated_pop))):
@@ -118,7 +125,12 @@ def main():
             network_file = os.path.join(gen_dir, f"{filename}.png")
             visualize_graph(network_graph, filename=network_file)
             
-            # Also save current generation fitness history
+            # For the best network, also create layer connectivity visualization
+            if i == 0:
+                connectivity_file = os.path.join(gen_dir, f"{filename}_layer_connectivity.png")
+                visualize_layer_connectivity(network_graph, filename=connectivity_file)
+            
+            # Save current generation fitness history
             fitness_file = os.path.join(gen_dir, "fitness_so_far.png")
             visualize_fitness_history(fitness_history, filename=fitness_file)
         
@@ -129,17 +141,24 @@ def main():
 
     # Evaluate on test set
     print("\nEvaluating best model on test set...")
-    test_accuracy = evaluate_best_model(best_graph, test_loader, DEVICE)
+    test_accuracy = evaluate_best_model(best_graph, weight_value)
     print(f"Best model test accuracy: {test_accuracy:.4f}")
 
     # Save final results
     print("Generating final visualizations...")
     visualize_graph(best_graph, filename=os.path.join(output_dir, "best_wann_graph.png"))
     visualize_fitness_history(fitness_history, filename=os.path.join(output_dir, "fitness_history.png"))
+    visualize_layer_connectivity(best_graph, filename=os.path.join(output_dir, "layer_connectivity.png"))
     
     # Save the best network with test accuracy info
     best_hidden = len([n for n in best_graph['nodes'] if n['type'] == 'hidden'])
-    final_best_file = os.path.join(output_dir, f"final_best_acc_{test_accuracy:.4f}_nodes_{len(best_graph['nodes'])}_hidden_{best_hidden}_edges_{len(best_graph['edges'])}.png")
+    layer_stats = analyze_layer_connectivity(best_graph)
+    skip_connections = layer_stats['skip_connections']
+    
+    final_best_file = os.path.join(
+        output_dir, 
+        f"final_best_acc_{test_accuracy:.4f}_nodes_{len(best_graph['nodes'])}_hidden_{best_hidden}_edges_{len(best_graph['edges'])}_skips_{skip_connections}.png"
+    )
     visualize_graph(best_graph, filename=final_best_file)
     
     print("Done!")

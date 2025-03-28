@@ -1,5 +1,5 @@
 """
-Utility functions for graph manipulation
+Utility functions for graph manipulation with layer support
 """
 import networkx as nx
 
@@ -26,9 +26,10 @@ def compute_topological_order(graph):
     try:
         return list(nx.topological_sort(G))
     except nx.NetworkXUnfeasible:
-        # If graph has cycles, use a fallback ordering
-        # For simplicity, we'll just sort by node id
-        return sorted([str(node['id']) for node in graph['nodes']])
+        # If graph has cycles, use a fallback ordering by layer
+        # Sort nodes by layer, and then by ID within each layer
+        sorted_nodes = sorted(graph['nodes'], key=lambda n: (n.get('layer', 0), n['id']))
+        return [str(node['id']) for node in sorted_nodes]
 
 
 def count_network_size(graph):
@@ -61,3 +62,81 @@ def get_node_ids_by_type(graph):
     output_ids = [node['id'] for node in graph['nodes'] if node['type'] == 'output']
     
     return input_ids, hidden_ids, output_ids
+
+
+def get_nodes_by_layer(graph):
+    """
+    Get the node IDs organized by layer
+    
+    Args:
+        graph (dict): Graph representation
+        
+    Returns:
+        list: List of lists containing node IDs for each layer
+    """
+    # Determine the maximum layer number
+    max_layer = max([node.get('layer', 0) for node in graph['nodes']])
+    
+    # Initialize lists for each layer
+    layers = [[] for _ in range(max_layer + 1)]
+    
+    # Populate layers
+    for node in graph['nodes']:
+        layer = node.get('layer', 0)
+        layers[layer].append(node['id'])
+    
+    return layers
+
+
+def analyze_layer_connectivity(graph):
+    """
+    Analyze the connectivity between layers
+    
+    Args:
+        graph (dict): Graph representation
+        
+    Returns:
+        dict: Statistics about layer connectivity
+    """
+    # Get nodes by layer
+    layers = get_nodes_by_layer(graph)
+    
+    # Initialize statistics
+    stats = {
+        'layer_sizes': [len(layer) for layer in layers],
+        'skip_connections': 0,
+        'adjacent_connections': 0,
+        'layer_connections': {}
+    }
+    
+    # Count connections between layers
+    for edge in graph['edges']:
+        src_id = edge['src']
+        dst_id = edge['dst']
+        
+        # Find the layers for src and dst
+        src_layer = None
+        dst_layer = None
+        
+        for i, layer in enumerate(layers):
+            if src_id in layer:
+                src_layer = i
+            if dst_id in layer:
+                dst_layer = i
+        
+        # If we found both layers
+        if src_layer is not None and dst_layer is not None:
+            layer_pair = (src_layer, dst_layer)
+            
+            # Update statistics
+            if layer_pair not in stats['layer_connections']:
+                stats['layer_connections'][layer_pair] = 0
+            stats['layer_connections'][layer_pair] += 1
+            
+            # Check if this is a skip connection
+            if dst_layer - src_layer > 1:
+                stats['skip_connections'] += 1
+            else:
+                stats['adjacent_connections'] += 1
+    
+    return stats

@@ -1,17 +1,20 @@
 """
-Mutation operations for graph evolution
+Mutation operations for graph evolution with support for multiple layers
 """
 import random
 import copy
 
-from ..model.graph_utils import get_node_ids_by_type
-from ..config import MUTATION_RATE, MAX_HIDDEN_NEURONS, MAX_EDGES, ADD_EDGE_PROB
+from ..model.graph_utils import get_node_ids_by_type, get_nodes_by_layer
+from ..config import (
+    MUTATION_RATE, MAX_HIDDEN_NEURONS, MAX_EDGES, 
+    ADD_EDGE_PROB, NUM_HIDDEN_LAYERS, LAYER_SKIP_PROB
+)
 
 
 def mutate_graph(graph, mutation_rate=MUTATION_RATE, max_hidden=MAX_HIDDEN_NEURONS, 
                 max_edges=MAX_EDGES, add_edge_prob=ADD_EDGE_PROB):
     """
-    Mutate a graph architecture
+    Mutate a graph architecture with layer support
     
     Args:
         graph (dict): Graph representation
@@ -33,6 +36,9 @@ def mutate_graph(graph, mutation_rate=MUTATION_RATE, max_hidden=MAX_HIDDEN_NEURO
     # Get node types and ids
     input_ids, hidden_ids, output_ids = get_node_ids_by_type(mutated)
     
+    # Get nodes by layer
+    layer_nodes = get_nodes_by_layer(mutated)
+    
     # Find max node id
     max_id = max([node['id'] for node in nodes])
     
@@ -44,29 +50,22 @@ def mutate_graph(graph, mutation_rate=MUTATION_RATE, max_hidden=MAX_HIDDEN_NEURO
         # Create potential new edges (ones that don't already exist)
         possible_new_edges = []
         
-        # Input to hidden connections
-        for src in input_ids:
-            for dst in hidden_ids:
-                if (src, dst) not in current_edges:
-                    possible_new_edges.append((src, dst))
-        
-        # Hidden to hidden connections
-        for src in hidden_ids:
-            for dst in hidden_ids:
-                if src != dst and (src, dst) not in current_edges:
-                    possible_new_edges.append((src, dst))
-        
-        # Hidden to output connections
-        for src in hidden_ids:
-            for dst in output_ids:
-                if (src, dst) not in current_edges:
-                    possible_new_edges.append((src, dst))
+        # Generate possible edges between layers (including skip connections)
+        for layer_idx in range(len(layer_nodes) - 1):
+            src_layer = layer_nodes[layer_idx]
+            
+            # Connect to all subsequent layers
+            for target_layer_idx in range(layer_idx + 1, len(layer_nodes)):
+                # Skip probability decreases with layer distance
+                if layer_idx + 1 < target_layer_idx and random.random() > LAYER_SKIP_PROB:
+                    continue
                     
-        # Direct input to output connections
-        for src in input_ids:
-            for dst in output_ids:
-                if (src, dst) not in current_edges:
-                    possible_new_edges.append((src, dst))
+                dst_layer = layer_nodes[target_layer_idx]
+                
+                for src in src_layer:
+                    for dst in dst_layer:
+                        if (src, dst) not in current_edges:
+                            possible_new_edges.append((src, dst))
         
         # Add a new edge if possible
         if possible_new_edges:
@@ -81,64 +80,101 @@ def mutate_graph(graph, mutation_rate=MUTATION_RATE, max_hidden=MAX_HIDDEN_NEURO
         # 1. Possibly add a hidden neuron
         if random.random() < mutation_rate and len(hidden_ids) < max_hidden:
             new_id = max_id + 1
-            nodes.append({"id": new_id, "type": "hidden"})
+            # Select a random hidden layer
+            layer = random.randint(1, NUM_HIDDEN_LAYERS)
+            nodes.append({"id": new_id, "type": "hidden", "layer": layer})
             hidden_ids.append(new_id)
             
             # Connect the new neuron to the network
-            # Connect to inputs
-            num_inputs_to_connect = random.randint(1, min(5, len(input_ids)))
-            for _ in range(num_inputs_to_connect):
-                src = random.choice(input_ids)
-                edges.append({
-                    "src": src,
-                    "dst": new_id,
-                    "sign": random.choice([-1, 1])
-                })
-                
-            # Connect to outputs
-            num_outputs_to_connect = random.randint(1, min(3, len(output_ids)))
-            for _ in range(num_outputs_to_connect):
-                dst = random.choice(output_ids)
-                edges.append({
-                    "src": new_id,
-                    "dst": dst,
-                    "sign": random.choice([-1, 1])
-                })
+            # Connect from previous layer
+            prev_layer_nodes = layer_nodes[layer-1] if layer-1 >= 0 else []
+            if prev_layer_nodes:
+                num_inputs_to_connect = random.randint(1, min(3, len(prev_layer_nodes)))
+                for _ in range(num_inputs_to_connect):
+                    src = random.choice(prev_layer_nodes)
+                    edges.append({
+                        "src": src,
+                        "dst": new_id,
+                        "sign": random.choice([-1, 1])
+                    })
+            
+            # Connect to next layer
+            next_layer_nodes = layer_nodes[layer+1] if layer+1 < len(layer_nodes) else []
+            if next_layer_nodes:
+                num_outputs_to_connect = random.randint(1, min(3, len(next_layer_nodes)))
+                for _ in range(num_outputs_to_connect):
+                    dst = random.choice(next_layer_nodes)
+                    edges.append({
+                        "src": new_id,
+                        "dst": dst,
+                        "sign": random.choice([-1, 1])
+                    })
+                    
+            # Possibly add a skip connection
+            if random.random() < LAYER_SKIP_PROB:
+                # Select a random distant layer
+                skip_options = list(range(layer+2, len(layer_nodes)))
+                if skip_options and layer_nodes[skip_options[0]]:
+                    skip_layer = random.choice(skip_options)
+                    dst = random.choice(layer_nodes[skip_layer])
+                    edges.append({
+                        "src": new_id,
+                        "dst": dst,
+                        "sign": random.choice([-1, 1])
+                    })
         
         # 2. Possibly remove a hidden neuron
-        if random.random() < mutation_rate and len(hidden_ids) > 1:
+        if random.random() < mutation_rate and len(hidden_ids) > NUM_HIDDEN_LAYERS:  # Ensure at least one neuron per layer
             remove_id = random.choice(hidden_ids)
             nodes = [node for node in nodes if node['id'] != remove_id]
             edges = [edge for edge in edges if edge['src'] != remove_id and edge['dst'] != remove_id]
         
-        # 3. Possibly add an edge (lower priority than the special case above)
-        if random.random() < mutation_rate/2 and len(edges) < max_edges:
-            # Create a new edge
-            all_srcs = input_ids + hidden_ids
-            all_dsts = hidden_ids + output_ids
+        # 3. Possibly add a skip connection
+        if random.random() < mutation_rate * LAYER_SKIP_PROB and len(edges) < max_edges:
+            # Find layers with distance > 1
+            possible_skip_connections = []
+            for layer_idx in range(len(layer_nodes) - 2):  # Skip immediate next layer
+                for target_layer_idx in range(layer_idx + 2, len(layer_nodes)):
+                    for src in layer_nodes[layer_idx]:
+                        for dst in layer_nodes[target_layer_idx]:
+                            if (src, dst) not in current_edges:
+                                possible_skip_connections.append((src, dst))
             
-            # Try to find a new connection that doesn't already exist
-            for _ in range(10):  # Try a few times
-                src = random.choice(all_srcs)
-                dst = random.choice(all_dsts)
-                
-                # Check if this edge already exists
-                edge_exists = (src, dst) in current_edges
-                
-                if not edge_exists:
-                    edges.append({
-                        "src": src, 
-                        "dst": dst,
-                        "sign": random.choice([-1, 1])
-                    })
-                    break
+            if possible_skip_connections:
+                src, dst = random.choice(possible_skip_connections)
+                edges.append({
+                    "src": src,
+                    "dst": dst,
+                    "sign": random.choice([-1, 1])
+                })
         
-        # 4. Possibly remove an edge
-        if random.random() < mutation_rate and len(edges) > 5:  # Keep at least 5 edges
+        # 4. Possibly add a regular edge (lower priority)
+        elif random.random() < mutation_rate/2 and len(edges) < max_edges:
+            # Create a new edge between adjacent layers
+            possible_new_edges = []
+            for layer_idx in range(len(layer_nodes) - 1):
+                src_layer = layer_nodes[layer_idx]
+                dst_layer = layer_nodes[layer_idx + 1]
+                
+                for src in src_layer:
+                    for dst in dst_layer:
+                        if (src, dst) not in current_edges:
+                            possible_new_edges.append((src, dst))
+            
+            if possible_new_edges:
+                src, dst = random.choice(possible_new_edges)
+                edges.append({
+                    "src": src,
+                    "dst": dst,
+                    "sign": random.choice([-1, 1])
+                })
+        
+        # 5. Possibly remove an edge
+        if random.random() < mutation_rate and len(edges) > NUM_HIDDEN_LAYERS * 3:  # Keep minimum connectivity
             remove_idx = random.randrange(len(edges))
             edges.pop(remove_idx)
         
-        # 5. Possibly flip an edge sign
+        # 6. Possibly flip an edge sign
         if random.random() < mutation_rate and edges:
             flip_idx = random.randrange(len(edges))
             edges[flip_idx]['sign'] *= -1

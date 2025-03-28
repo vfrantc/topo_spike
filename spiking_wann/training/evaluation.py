@@ -1,15 +1,16 @@
 """
-Evaluation functions for Spiking WANNs
+Evaluation functions for Spiking WANNs with layer support
 """
 import torch
 from torch.utils.data import DataLoader
 from tqdm import tqdm
 from spikingjelly.activation_based import functional
 from concurrent.futures import ProcessPoolExecutor
+from torchvision import datasets, transforms
 
-from ..config import BATCH_SIZE, T, ALPHA, NUM_WORKERS
+from ..config import BATCH_SIZE, T, ALPHA, NUM_WORKERS, DEVICE, NUM_INPUTS, NUM_OUTPUTS
 from ..model.network import SpikingWANN
-from ..model.graph_utils import count_network_size
+from ..model.graph_utils import count_network_size, analyze_layer_connectivity
 
 
 def evaluate_individual(args):
@@ -64,8 +65,14 @@ def evaluate_individual(args):
     # Count nodes and edges for complexity penalty
     num_hidden, num_edges = count_network_size(graph)
     
-    # Compute fitness
-    fitness = 100 * accuracy - alpha * (num_hidden + num_edges)
+    # Get layer connectivity stats
+    layer_stats = analyze_layer_connectivity(graph)
+    skip_connections = layer_stats['skip_connections']
+    
+    # Compute fitness with a small bonus for skip connections
+    # This encourages exploration of layer-skipping architectures
+    skip_bonus = 0.001 * skip_connections
+    fitness = 100 * accuracy - alpha * (num_hidden + num_edges) + skip_bonus
     
     return (graph, fitness, accuracy)
 
@@ -101,6 +108,7 @@ def evaluate_population_parallel(population, weight_value, dataset, batch_size=B
     results.sort(key=lambda x: x[1], reverse=True)
     
     return results
+
 
 def evaluate_best_model(best_graph, weight_value=1.0):
     """
